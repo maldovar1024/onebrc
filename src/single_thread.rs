@@ -1,9 +1,11 @@
+use ahash::RandomState;
+use memmap2::Mmap;
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Write as _},
+    io::{BufWriter, Write as _},
+    simd::{cmp::SimdPartialEq, u8x64},
 };
-use ahash::RandomState;
 
 struct Item {
     min: i64,
@@ -12,6 +14,7 @@ struct Item {
     total: u64,
 }
 
+#[inline]
 fn fold_num(a: i64, &b: &u8) -> i64 {
     if b == b'.' {
         a
@@ -20,26 +23,39 @@ fn fold_num(a: i64, &b: &u8) -> i64 {
     }
 }
 
+const WIDTH: usize = 64;
+
+#[inline]
+fn find_char(buf: &[u8], start: usize, c: u8) -> Option<usize> {
+    let test = u8x64::splat(c);
+
+    let mut i = start;
+
+    while i + WIDTH <= buf.len() {
+        if let Some(target_pos) = u8x64::from_slice(&buf[i..]).simd_eq(test).first_set() {
+            return Some(i + target_pos);
+        }
+
+        i += WIDTH;
+    }
+
+    buf[i..].iter().position(|&x| x == c).map(|x| x + i)
+}
+
 pub fn run_single_thread(input_file: &str, output_file: &str) -> std::io::Result<()> {
-    let mut reader = BufReader::new(File::open(input_file)?);
-    let mut buf = Vec::with_capacity(110);
+    let mmap = unsafe { Mmap::map(&File::open(input_file)?)? };
+    let buf = mmap.as_ref();
 
     let mut map = HashMap::<Box<[u8]>, Item, RandomState>::default();
 
-    loop {
-        reader.read_until(b'\n', &mut buf)?;
-        if buf.last().is_some_and(|&b| b == b'\n') {
-            buf.pop();
-        }
-        if buf.is_empty() {
-            break;
-        }
+    let mut start = 0;
 
-        let splitter= buf.iter().position(|&x| x == b';').unwrap();
+    while start < buf.len() {
+        let colon_pos = find_char(buf, start, b';').unwrap();
+        let next_end = find_char(buf, colon_pos + 1, b'\n').unwrap_or(buf.len());
 
-        let city = &buf[0..splitter];
-
-        let t = &buf[splitter + 1..];
+        let city = &buf[start..colon_pos];
+        let t = &buf[colon_pos + 1..next_end];
         let temperature = if t[0] == b'-' {
             -t[1..].iter().fold(0, fold_num)
         } else {
@@ -66,7 +82,7 @@ pub fn run_single_thread(input_file: &str, output_file: &str) -> std::io::Result
             }
         }
 
-        buf.clear();
+        start = next_end + 1;
     }
 
     let mut v = Vec::from_iter(map);
